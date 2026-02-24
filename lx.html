@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>箭头逃逸</title>
+    <style>
+        :root {
+            --cell-size: 45px;
+            --grid-dim: 8; 
+            --bg-dark: #0f172a;
+            --danger: #ef4444;
+            --accent: #3b82f6;
+        }
+
+        body {
+            margin: 0; background: var(--bg-dark); color: white;
+            display: flex; flex-direction: column; align-items: center;
+            font-family: 'Segoe UI', system-ui, sans-serif; touch-action: none;
+            height: 100vh; overflow: hidden;
+        }
+
+        #header {
+            width: 360px; padding: 20px 10px; display: flex; 
+            justify-content: space-between; align-items: center;
+        }
+
+        /* 爱心容器与动画 */
+        #hp-box { display: flex; gap: 8px; min-width: 100px; justify-content: flex-end; }
+        .heart {
+            color: var(--danger); font-size: 26px;
+            transition: all 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            display: inline-block;
+        }
+        .heart-gone {
+            transform: scale(0) rotate(45deg);
+            opacity: 0;
+            width: 0;
+            margin: 0;
+        }
+
+        #viewport {
+            position: relative;
+            width: calc(var(--cell-size) * var(--grid-dim));
+            height: calc(var(--cell-size) * var(--grid-dim));
+            background: #1e293b;
+            border: 6px solid #334155;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.6);
+        }
+
+        .seg {
+            position: absolute;
+            width: var(--cell-size);
+            height: var(--cell-size);
+            box-sizing: border-box;
+            border: 1px solid rgba(0,0,0,0.15);
+            transition: transform 0.5s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s;
+            z-index: 10;
+        }
+
+        /* 箭头头部三角形 */
+        .head::after {
+            content: "";
+            position: absolute;
+            bottom: 25%; left: 50%;
+            transform: translateX(-50%);
+            width: 0; height: 0;
+            border-left: 10px solid transparent;
+            border-right: 10px solid transparent;
+            border-bottom: 18px solid rgba(255,255,255,0.9);
+        }
+
+        .shake { animation: shake 0.4s; }
+        @keyframes shake {
+            0%, 100% { transform: translate(0,0); }
+            25% { transform: translate(-10px, 0); }
+            75% { transform: translate(10px, 0); }
+        }
+
+        #overlay {
+            position: fixed; inset: 0; background: rgba(15,23,42,0.9);
+            display: none; flex-direction: column; align-items: center; justify-content: center;
+            z-index: 100; backdrop-filter: blur(5px);
+        }
+
+        .btn {
+            background: var(--accent); color: white; border: none;
+            padding: 12px 36px; border-radius: 50px; font-size: 1.1rem;
+            cursor: pointer; font-weight: bold; margin-top: 20px;
+        }
+
+        /* 音量控制按钮样式 */
+        #audio-control {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 40px;
+            height: 40px;
+            background: rgba(59, 130, 246, 0.8);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            z-index: 99;
+        }
+    </style>
+</head>
+<body>
+    <!-- 音频元素 -->
+    <audio id="bg-music" loop>
+        <!-- 替换为你的背景音乐URL，支持mp3/ogg等格式 -->
+        <source src="background-music.mp3" type="audio/mpeg">
+        您的浏览器不支持音频播放
+    </audio>
+
+    <!--音量控制按钮 -->
+    <div id="audio-control" onclick="toggleAudio()">
+        <span id="audio-icon">🔊</span>
+    </div>
+
+    <div id="header">
+        <div style="font-size: 1.2rem; font-weight: bold;">LEVEL <span id="lv-val">1</span></div>
+        <div id="hp-box"></div>
+    </div>
+
+    <div id="viewport"></div>
+
+    <div id="overlay">
+        <h1 id="msg">挑战失败</h1>
+        <button class="btn" onclick="initGame(true)">重新开始旅程</button>
+    </div>
+
+<script>
+const GRID = 8;
+const CELL = 45;
+const COLORS = ['#F87171', '#FB923C', '#FBBF24', '#4ADE80', '#2DD4BF', '#38BDF8', '#818CF8', '#A78BFA', '#F472B6'];
+const VEC = {
+    U: { dr: -1, dc: 0, deg: 0 },
+    R: { dr: 0, dc: 1, deg: 90 },
+    D: { dr: 1, dc: 0, deg: 180 },
+    L: { dr: 0, dc: -1, deg: 270 }
+};
+
+let lives = 3;
+let level = 1;
+let grid = [];
+let arrows = [];
+
+/** 1. 邻域颜色避让：确保相邻箭头颜色不同 **/
+function getUniqueColor(cells) {
+    let forbidden = new Set();
+    for (const [r, c] of cells) {
+        [[0,1],[0,-1],[1,0],[-1,0]].forEach(([dr, dc]) => {
+            const nr = r + dr, nc = c + dc;
+            if (nr >= 0 && nr < GRID && nc >= 0 && nc < GRID) {
+                const id = grid[nr][nc];
+                if (id) {
+                    const a = arrows.find(x => x.id === id);
+                    if (a) forbidden.add(a.color);
+                }
+            }
+        });
+    }
+    const safe = COLORS.filter(c => !forbidden.has(c));
+    return safe.length > 0 ? safe[Math.floor(Math.random()*safe.length)] : COLORS[0];
+}
+
+/** 2. 逆向生成算法 **/
+function generateLevel() {
+    grid = Array(GRID).fill().map(() => Array(GRID).fill(null));
+    arrows = [];
+    const view = document.getElementById('viewport');
+    view.innerHTML = '';
+    
+    let idSeed = 1;
+    for (let i = 0; i < 400; i++) {
+        const v = VEC[Object.keys(VEC)[Math.floor(Math.random()*4)]];
+        const len = Math.floor(Math.random()*3) + 2;
+        const isL = Math.random() > 0.7;
+        
+        const shape = createShape(len, isL);
+        if (shape && canPush(shape, v)) {
+            const id = idSeed++;
+            const color = getUniqueColor(shape);
+            const arrow = { id, cells: shape, vec: v, color };
+            arrows.push(arrow);
+            shape.forEach(([r, c]) => grid[r][c] = id);
+            renderArrow(arrow);
+        }
+    }
+}
+
+function createShape(len, isL) {
+    let r = Math.floor(Math.random()*GRID), c = Math.floor(Math.random()*GRID);
+    let cells = [[r,c]];
+    const d1 = VEC[Object.keys(VEC)[Math.floor(Math.random()*4)]];
+    if(!isL) {
+        for(let i=1; i<len; i++) cells.push([r+d1.dr*i, c+d1.dc*i]);
+    } else {
+        const d2 = VEC[Object.keys(VEC)[Math.floor(Math.random()*4)]];
+        cells.push([r+d1.dr, c+d1.dc]);
+        cells.push([r+d1.dr+d2.dr, c+d1.dc+d2.dc]);
+    }
+    return cells;
+}
+
+function canPush(cells, v) {
+    for (const [r, c] of cells) {
+        if (r<0 || r>=GRID || c<0 || c>=GRID || grid[r][c] !== null) return false;
+        let nr = r + v.dr, nc = c + v.dc;
+        while (nr>=0 && nr<GRID && nc>=0 && nc<GRID) {
+            if (grid[nr][nc] !== null) return false;
+            nr += v.dr; nc += v.dc;
+        }
+    }
+    return true;
+}
+
+function renderArrow(arrow) {
+    const view = document.getElementById('viewport');
+    arrow.cells.forEach(([r, c], idx) => {
+        const d = document.createElement('div');
+        d.className = 'seg' + (idx === arrow.cells.length-1 ? ' head' : '');
+        d.style.cssText = `left:${c*CELL}px; top:${r*CELL}px; background:${arrow.color}; transform:rotate(${arrow.vec.deg}deg);`;
+        d.dataset.id = arrow.id;
+        d.onclick = () => tryMove(arrow.id);
+        view.appendChild(d);
+    });
+}
+
+/** 3. 移动逻辑与消失路径 **/
+function tryMove(id) {
+    const a = arrows.find(x => x.id === id);
+    let hit = false;
+    for (const [r, c] of a.cells) {
+        let nr = r + a.vec.dr, nc = c + a.vec.dc;
+        while (nr>=0 && nr<GRID && nc>=0 && nc<GRID) {
+            if (grid[nr][nc] !== null && grid[nr][nc] !== id) { hit = true; break; }
+            nr += a.vec.dr; nc += a.vec.dc;
+        }
+    }
+
+    if (hit) {
+        lives--;
+        refreshHearts();
+        const v = document.getElementById('viewport');
+        v.classList.add('shake');
+        setTimeout(() => v.classList.remove('shake'), 400);
+        if (lives <= 0) document.getElementById('overlay').style.display = 'flex';
+    } else {
+        a.cells.forEach(([r, c]) => grid[r][c] = null);
+        document.querySelectorAll(`.seg[data-id="${id}"]`).forEach(el => {
+            el.style.transform += ` translate(0, -600px)`; // 消失路径与指向一致
+            el.style.opacity = '0';
+        });
+        arrows = arrows.filter(x => x.id !== id);
+        if (arrows.length === 0) {
+            setTimeout(() => { level++; initGame(false); }, 600);
+        }
+    }
+}
+
+/** 4. 爱心重置与更新 **/
+function refreshHearts() {
+    const box = document.getElementById('hp-box');
+    // 如果盒子里没心（新关卡），则填满
+    if (box.querySelectorAll('.heart:not(.heart-gone)').length === 0) {
+        box.innerHTML = '';
+        for(let i=0; i<3; i++) {
+            const s = document.createElement('span');
+            s.className = 'heart';
+            s.innerText = '♥';
+            box.appendChild(s);
+        }
+    }
+    
+    // 根据当前生命值，让多余的心“消失”
+    const currentHearts = box.querySelectorAll('.heart:not(.heart-gone)');
+    if (currentHearts.length > lives) {
+        const toRemove = currentHearts.length - lives;
+        for(let i=0; i<toRemove; i++) {
+            currentHearts[currentHearts.length - 1 - i].classList.add('heart-gone');
+        }
+    }
+}
+
+/** 5. 游戏初始化/关卡切换 **/
+function initGame(isFullReset) {
+    if (isFullReset) {
+        level = 1;
+        document.getElementById('overlay').style.display = 'none';
+    }
+    lives = 3; // 关键：进入新关卡重置生命
+    document.getElementById('lv-val').innerText = level;
+    document.getElementById('hp-box').innerHTML = ''; // 清空爱心容器以重新生长
+    refreshHearts();
+    generateLevel();
+}
+
+// 音频控制相关函数
+function initAudio() {
+    const audio = document.getElementById('bg-music');
+    // 自动播放（需用户交互后才能播放，浏览器限制）
+    document.addEventListener('click', () => {
+        audio.play().catch(err => console.log('音频播放失败:', err));
+    }, { once: true });
+}
+
+// 切换音频播放/暂停
+function toggleAudio() {
+    const audio = document.getElementById('bg-music');
+    const icon = document.getElementById('audio-icon');
+    if (audio.paused) {
+        audio.play();
+        icon.textContent = '🔊';
+    } else {
+        audio.pause();
+        icon.textContent = '🔇';
+    }
+}
+
+// 初始化音频
+initAudio();
+// 初始化游戏
+initGame(true);
+</script>
+</body>
+</html>
+
