@@ -134,14 +134,15 @@
     </div>
 
 <script>
+// ========== I. 修复消失动画方向 ============
 const GRID = 8;
 const CELL = 45;
 const COLORS = ['#F87171', '#FB923C', '#FBBF24', '#4ADE80', '#2DD4BF', '#38BDF8', '#818CF8', '#A78BFA', '#F472B6'];
 const VEC = {
-    U: { dr: -1, dc: 0, deg: 0 },
-    R: { dr: 0, dc: 1, deg: 90 },
-    D: { dr: 1, dc: 0, deg: 180 },
-    L: { dr: 0, dc: -1, deg: 270 }
+    U: { dr: -1, dc: 0, deg: 0, tx: 0, ty: -1 },
+    R: { dr: 0, dc: 1, deg: 90, tx: 1, ty: 0 },
+    D: { dr: 1, dc: 0, deg: 180, tx: 0, ty: 1 },
+    L: { dr: 0, dc: -1, deg: 270, tx: -1, ty: 0 }
 };
 
 let lives = 3;
@@ -193,16 +194,46 @@ function generateLevel() {
     }
 }
 
+// ========== IV. 优化 createShape 防止越界及重复 =========== //
 function createShape(len, isL) {
-    let r = Math.floor(Math.random()*GRID), c = Math.floor(Math.random()*GRID);
-    let cells = [[r,c]];
-    const d1 = VEC[Object.keys(VEC)[Math.floor(Math.random()*4)]];
-    if(!isL) {
-        for(let i=1; i<len; i++) cells.push([r+d1.dr*i, c+d1.dc*i]);
+    // 通用起点范围：为防止越界，起点预留足够余量
+    const safeStart = (delta) => Math.floor(Math.random() * (GRID - Math.abs(delta)));
+    let r, c;
+    let cells = [];
+    if (!isL) {
+        // 直线形，随机选择主方向
+        const vecKeys = Object.keys(VEC);
+        const dir = vecKeys[Math.floor(Math.random()*4)];
+        const d = VEC[dir];
+        // 起点保证整体不会越界
+        r = (d.dr >= 0) ? Math.floor(Math.random()*(GRID-len)) : Math.floor(Math.random()*(GRID-len))+len-1;
+        c = (d.dc >= 0) ? Math.floor(Math.random()*(GRID-len)) : Math.floor(Math.random()*(GRID-len))+len-1;
+        cells = [];
+        for(let i=0; i<len; i++) {
+            let rr = r + d.dr*i;
+            let cc = c + d.dc*i;
+            if(rr < 0 || rr >= GRID || cc < 0 || cc >= GRID) return null;
+            cells.push([rr, cc]);
+        }
+        // 检查是否有重复点（理论上不会）
     } else {
-        const d2 = VEC[Object.keys(VEC)[Math.floor(Math.random()*4)]];
-        cells.push([r+d1.dr, c+d1.dc]);
-        cells.push([r+d1.dr+d2.dr, c+d1.dc+d2.dc]);
+        // L形拐弯: 任取d1，d2，且 d2 != d1 且 d2 不是反向
+        const vecKeys = Object.keys(VEC);
+        let d1Idx = Math.floor(Math.random()*4);
+        let d2IdxArr = [0,1,2,3].filter(x => x !== d1Idx && (x+2)%4 !== d1Idx); // 排除自身和反向
+        let d2Idx = d2IdxArr[Math.floor(Math.random()*d2IdxArr.length)];
+        const d1 = VEC[vecKeys[d1Idx]];
+        const d2 = VEC[vecKeys[d2Idx]];
+        // 起点最大步长
+        let maxr = GRID-2, maxc = GRID-2, minr = 1, minc =1;
+        r = Math.floor(Math.random()*(maxr-minr+1))+minr;
+        c = Math.floor(Math.random()*(maxc-minc+1))+minc;
+        let s0 = [r, c];
+        let s1 = [r+d1.dr, c+d1.dc];
+        let s2 = [s1[0]+d2.dr, s1[1]+d2.dc];
+        if ([s0, s1, s2].some(([rr,cc])=>rr<0||rr>=GRID||cc<0||cc>=GRID)) return null;
+        if (new Set([s0.join(), s1.join(), s2.join()]).size!==3) return null;
+        cells = [s0, s1, s2];
     }
     return cells;
 }
@@ -253,7 +284,10 @@ function tryMove(id) {
     } else {
         a.cells.forEach(([r, c]) => grid[r][c] = null);
         document.querySelectorAll(`.seg[data-id="${id}"]`).forEach(el => {
-            el.style.transform += ` translate(0, -600px)`; // 消失路径与指向一致
+            // 新增按箭头方向逐格外飞
+            const tx = a.vec.tx * 600;
+            const ty = a.vec.ty * 600;
+            el.style.transform += ` translate(${tx}px, ${ty}px)`;
             el.style.opacity = '0';
         });
         arrows = arrows.filter(x => x.id !== id);
@@ -276,7 +310,6 @@ function refreshHearts() {
             box.appendChild(s);
         }
     }
-    
     // 根据当前生命值，让多余的心“消失”
     const currentHearts = box.querySelectorAll('.heart:not(.heart-gone)');
     if (currentHearts.length > lives) {
@@ -329,4 +362,3 @@ initGame(true);
 </script>
 </body>
 </html>
-
